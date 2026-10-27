@@ -24,7 +24,8 @@ variables:
   MAESTRO_VERSION: '2.11.0'
   MAESTRO_CLI_NO_ANALYTICS: '1'
   MAESTRO_DRIVER_STARTUP_TIMEOUT: '180000'
-  EMULATOR_IMAGE: 'system-images;android-${{ parameters.apiLevel }};google_apis;x86_64'
+  # 'default' = plain Android without Google Play services/apps: much lighter and faster on CI
+  EMULATOR_IMAGE: 'system-images;android-${{ parameters.apiLevel }};default;x86_64'
   APK_FILE: '$(Agent.TempDirectory)/app.apk'
  
 jobs:
@@ -91,6 +92,16 @@ jobs:
       done
       echo "Booted in $(( $(date +%s) - START ))s"
  
+      # Don't show "isn't responding" (ANR) / crash dialogs over the app under test
+      adb shell settings put global hide_error_dialogs 1
+      adb shell settings put secure anr_show_background 0
+      adb shell settings put global package_verifier_enable 0
+ 
+      # Let post-boot background work finish before testing
+      echo "Letting the emulator settle for 45s..."
+      sleep 45
+      adb shell input keyevent KEYCODE_HOME
+ 
       adb shell settings put global window_animation_scale 0
       adb shell settings put global transition_animation_scale 0
       adb shell settings put global animator_duration_scale 0
@@ -117,11 +128,10 @@ jobs:
       searchFolder: '$(Build.SourcesDirectory)/.maestro/suite/reports/android'
       testResultsFiles: '*/report.xml'
       testRunTitle: 'Maestro Android'
- 
+
   - task: PublishPipelineArtifact@1
-    displayName: Upload reports and screenshots
+    displayName: Upload failure screenshots
     condition: always()
     inputs:
-      targetPath: '$(Build.SourcesDirectory)/.maestro/suite/reports/android'
-      artifact: maestro-android-$(System.JobAttempt)
- 
+      targetPath: '$(Build.SourcesDirectory)/.maestro/suite/screenshots'
+      artifact: maestro-android-screenshots-$(System.JobAttempt)

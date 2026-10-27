@@ -241,6 +241,13 @@ for ($attempt = 2; $attempt -le $Retries + 1; $attempt++) {
     }
 }
 
+# ── Failure screenshots ───────────────────────────────────────────────────────
+# Flows save a *_failed_*.png into the attempt's artifacts folder when they fail
+# (Maestro won't let takeScreenshot write anywhere else); collect them in screenshots/.
+$failShotDir = Join-Path $suiteDir 'screenshots'
+$failShots = @(Get-ChildItem -Path $runDir -Recurse -File -Filter '*_failed_*.png' -ErrorAction SilentlyContinue)
+foreach ($shot in $failShots) { Copy-Item -LiteralPath $shot.FullName -Destination $failShotDir -Force }
+
 # ── Final report: attempt 1, with each re-run test replaced by its last run ──
 [xml]$final = Get-Content -Raw -Encoding UTF8 $attemptReports[0]
 for ($i = 1; $i -lt $attemptReports.Count; $i++) {
