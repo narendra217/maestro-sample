@@ -1,0 +1,115 @@
+# Maestro Android tests - Azure DevOps, Microsoft-hosted agent, manual trigger only.
+trigger: none
+pr: none
+
+parameters:
+  - name: apkUrl
+    displayName: 'APK download URL'
+    type: string
+    default: 'https://autoteststoragemahesh.blob.core.windows.net/maheshcontainer/mrh.apk'
+  - name: testPath
+    displayName: 'Test file or folder (relative to .maestro/suite, empty = whole suite)'
+    type: string
+    default: 'tests/auth/login_success.yaml'
+  - name: retries
+    displayName: 'Retries per failed test'
+    type: number
+    default: 2
+  - name: apiLevel
+    displayName: 'Android API level'
+    type: string
+    default: '34'
+
+variables:
+  MAESTRO_VERSION: '2.11.0'
+  MAESTRO_CLI_NO_ANALYTICS: '1'
+  MAESTRO_DRIVER_STARTUP_TIMEOUT: '180000'
+  EMULATOR_IMAGE: 'system-images;android-${{ parameters.apiLevel }};google_apis;x86_64'
+  APK_FILE: '$(Agent.TempDirectory)/app.apk'
+
+jobs:
+- job: maestro_android
+  displayName: Maestro - Android
+  timeoutInMinutes: 60
+  pool:
+    vmImage: macOS-15          # only hosted agent that can run the Android emulator
+  steps:
+  - checkout: self
+
+  - task: JavaToolInstaller@0
+    displayName: Use Java 17
+    inputs:
+      versionSpec: '17'
+      jdkArchitectureOption: x64
+      jdkSourceOption: PreInstalled
+
+  - script: |
+      set -e
+      curl -fsSL "https://get.maestro.mobile.dev" | bash
+      echo "##vso[task.prependpath]$HOME/.maestro/bin"
+      echo "##vso[task.prependpath]$ANDROID_HOME/platform-tools"
+      echo "##vso[task.prependpath]$ANDROID_HOME/emulator"
+      "$HOME/.maestro/bin/maestro" --version
+    displayName: Install Maestro
+
+  - script: |
+      set -e
+      curl -fL --retry 3 -o "$(APK_FILE)" "$APK_URL"
+      ls -lh "$(APK_FILE)"
+      # A real APK is a zip file and starts with "PK"
+      head -c 2 "$(APK_FILE)" | grep -q PK || { echo "##vso[task.logissue type=error]Downloaded file is not an APK (check the URL / blob access)"; head -c 300 "$(APK_FILE)"; exit 1; }
+    displayName: Download APK
+    env:
+      APK_URL: ${{ parameters.apkUrl }}
+
+  - script: |
+      set -e
+      SDK="$ANDROID_HOME/cmdline-tools/latest/bin"
+      yes | "$SDK/sdkmanager" --licenses > /dev/null
+      "$SDK/sdkmanager" --install "$(EMULATOR_IMAGE)" "emulator" "platform-tools" > /dev/null
+      echo "no" | "$SDK/avdmanager" create avd -n ci -k "$(EMULATOR_IMAGE)" -d pixel_6 --force
+
+      nohup emulator -avd ci -no-window -no-audio -no-boot-anim -no-snapshot \
+        -gpu swiftshader_indirect -memory 4096 > "$(Agent.TempDirectory)/emulator.log" 2>&1 &
+
+      adb wait-for-device
+      echo "Waiting for boot..."
+      for i in $(seq 1 120); do
+        [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+        sleep 5
+      done
+      adb shell getprop sys.boot_completed | grep -q 1 || { cat "$(Agent.TempDirectory)/emulator.log"; exit 1; }
+
+      adb shell settings put global window_animation_scale 0
+      adb shell settings put global transition_animation_scale 0
+      adb shell settings put global animator_duration_scale 0
+      adb devices
+    displayName: Start Android emulator
+
+  # Same as local: run.ps1 installs the APK (-Apk/-ReinstallApp) and runs the tests
+  - pwsh: |
+      ./.maestro/suite/run.ps1 `
+        -Platform android `
+        -Device emulator-5554 `
+        -Apk "$(APK_FILE)" `
+        -ReinstallApp `
+        -Retries ${{ parameters.retries }} `
+        -Path "${{ parameters.testPath }}"
+      exit $LASTEXITCODE
+    displayName: Run Maestro tests
+
+  - task: PublishTestResults@2
+    displayName: Publish test results
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      searchFolder: '$(Build.SourcesDirectory)/.maestro/suite/reports/android'
+      testResultsFiles: '*/report.xml'
+      testRunTitle: 'Maestro Android'
+
+  - task: PublishPipelineArtifact@1
+    displayName: Upload reports and screenshots
+    condition: always()
+    inputs:
+      targetPath: '$(Build.SourcesDirectory)/.maestro/suite/reports/android'
+      artifact: maestro-android-$(System.JobAttempt)
