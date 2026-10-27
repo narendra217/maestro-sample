@@ -4,6 +4,23 @@ tags:
   - auth
   - home
   - smoke
+# On any failure, save a screenshot of the screen at that moment to
+# screenshots/ (the folder next to screenshots/baseline/). onFlowComplete runs
+# whether the flow passed or failed, so the flow marks itself passed as its
+# last step and the hook only takes the screenshot when that mark is missing.
+# run.ps1 provides BASELINE_DIR (absolute); without it the path falls back to
+# .maestro/suite/screenshots relative to where `maestro test` is run (repo root).
+onFlowStart:
+  - evalScript: ${output.loginPassed = false}
+  - evalScript: "${output.failShotDir = (typeof BASELINE_DIR !== 'undefined' && BASELINE_DIR ? BASELINE_DIR + '/../..' : '.maestro/suite/screenshots')}"
+onFlowComplete:
+  - runFlow:
+      when:
+        true: ${!output.loginPassed}
+      commands:
+        - takeScreenshot:
+            path: "${output.failShotDir}/login_success_failed_${maestro.platform}_${new Date().toISOString().replace(/[:.]/g, '-')}"
+            label: Capture screenshot of the failure
 ---
 # Requires TEST_EMAIL / TEST_PASSWORD in .env.test (or .env.test.<platform>).
 #
@@ -41,3 +58,7 @@ tags:
 #- assertVisible:
 #    id: account-guest-signin
 #    label: Guest sign-in prompt is back after sign out
+
+# Keep this last: reaching it means every step above passed, so no failure
+# screenshot is taken.
+- evalScript: ${output.loginPassed = true}
