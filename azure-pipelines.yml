@@ -1,7 +1,7 @@
 # Maestro Android tests - Azure DevOps, Microsoft-hosted agent, manual trigger only.
 trigger: none
 pr: none
-
+ 
 parameters:
   - name: apkUrl
     displayName: 'APK download URL'
@@ -18,15 +18,15 @@ parameters:
   - name: apiLevel
     displayName: 'Android API level'
     type: string
-    default: '34'
-
+    default: '31'               # older images boot much faster on the hosted Intel Macs
+ 
 variables:
   MAESTRO_VERSION: '2.11.0'
   MAESTRO_CLI_NO_ANALYTICS: '1'
   MAESTRO_DRIVER_STARTUP_TIMEOUT: '180000'
   EMULATOR_IMAGE: 'system-images;android-${{ parameters.apiLevel }};google_apis;x86_64'
   APK_FILE: '$(Agent.TempDirectory)/app.apk'
-
+ 
 jobs:
 - job: maestro_android
   displayName: Maestro - Android
@@ -35,14 +35,14 @@ jobs:
     vmImage: macOS-15          # only hosted agent that can run the Android emulator
   steps:
   - checkout: self
-
+ 
   - task: JavaToolInstaller@0
     displayName: Use Java 17
     inputs:
       versionSpec: '17'
       jdkArchitectureOption: x64
       jdkSourceOption: PreInstalled
-
+ 
   - script: |
       set -e
       curl -fsSL "https://get.maestro.mobile.dev" | bash
@@ -51,7 +51,7 @@ jobs:
       echo "##vso[task.prependpath]$ANDROID_HOME/emulator"
       "$HOME/.maestro/bin/maestro" --version
     displayName: Install Maestro
-
+ 
   - script: |
       set -e
       curl -fL --retry 3 -o "$(APK_FILE)" "$APK_URL"
@@ -61,31 +61,42 @@ jobs:
     displayName: Download APK
     env:
       APK_URL: ${{ parameters.apkUrl }}
-
+ 
   - script: |
       set -e
       SDK="$ANDROID_HOME/cmdline-tools/latest/bin"
       yes | "$SDK/sdkmanager" --licenses > /dev/null
       "$SDK/sdkmanager" --install "$(EMULATOR_IMAGE)" "emulator" "platform-tools" > /dev/null
       echo "no" | "$SDK/avdmanager" create avd -n ci -k "$(EMULATOR_IMAGE)" -d pixel_6 --force
-
+ 
+      echo "--- Hardware acceleration check ---"
+      emulator -accel-check || true
+ 
+      LOG="$(Agent.TempDirectory)/emulator.log"
       nohup emulator -avd ci -no-window -no-audio -no-boot-anim -no-snapshot \
-        -gpu swiftshader_indirect -memory 4096 > "$(Agent.TempDirectory)/emulator.log" 2>&1 &
-
-      adb wait-for-device
-      echo "Waiting for boot..."
-      for i in $(seq 1 120); do
-        [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+        -accel on -cores 3 -memory 4096 -gpu swiftshader_indirect \
+        -camera-back none -camera-front none -netdelay none -netspeed full \
+        > "$LOG" 2>&1 &
+ 
+      echo "Waiting for boot (max 12 min)..."
+      START=$(date +%s)
+      until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
+        ELAPSED=$(( $(date +%s) - START ))
+        if [ $ELAPSED -gt 720 ]; then
+          echo "##vso[task.logissue type=error]Emulator did not boot in 12 minutes"
+          cat "$LOG"; exit 1
+        fi
+        if [ $(( ELAPSED % 60 )) -lt 5 ]; then echo "  ${ELAPSED}s - last log line: $(tail -n 1 "$LOG")"; fi
         sleep 5
       done
-      adb shell getprop sys.boot_completed | grep -q 1 || { cat "$(Agent.TempDirectory)/emulator.log"; exit 1; }
-
+      echo "Booted in $(( $(date +%s) - START ))s"
+ 
       adb shell settings put global window_animation_scale 0
       adb shell settings put global transition_animation_scale 0
       adb shell settings put global animator_duration_scale 0
       adb devices
     displayName: Start Android emulator
-
+ 
   # Same as local: run.ps1 installs the APK (-Apk/-ReinstallApp) and runs the tests
   - pwsh: |
       ./.maestro/suite/run.ps1 `
@@ -97,7 +108,7 @@ jobs:
         -Path "${{ parameters.testPath }}"
       exit $LASTEXITCODE
     displayName: Run Maestro tests
-
+ 
   - task: PublishTestResults@2
     displayName: Publish test results
     condition: always()
@@ -106,10 +117,11 @@ jobs:
       searchFolder: '$(Build.SourcesDirectory)/.maestro/suite/reports/android'
       testResultsFiles: '*/report.xml'
       testRunTitle: 'Maestro Android'
-
+ 
   - task: PublishPipelineArtifact@1
     displayName: Upload reports and screenshots
     condition: always()
     inputs:
       targetPath: '$(Build.SourcesDirectory)/.maestro/suite/reports/android'
       artifact: maestro-android-$(System.JobAttempt)
+ 
