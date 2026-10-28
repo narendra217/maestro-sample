@@ -10,7 +10,7 @@ parameters:
   - name: testPath
     displayName: 'Test file or folder (relative to .maestro/suite, empty = whole suite)'
     type: string
-    default: 'tests/auth/login_success.yaml'
+    default: 'tests/auth'
   - name: retries
     displayName: 'Retries per failed test'
     type: number
